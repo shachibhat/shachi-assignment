@@ -1,0 +1,81 @@
+import pandas as pd
+import os
+import validators
+import requests
+import matplotlib.pyplot as plt
+import seaborn as sns
+
+from pyspark.sql.types import *
+from pyspark.sql.functions import col,regexp_replace
+
+# File location and type
+file_location = "/FileStore/tables/zzz-2.csv"
+file_type = "csv"
+ 
+# CSV options
+infer_schema = "false"
+first_row_is_header = "true"
+delimiter = ","
+ 
+# The applied options are for CSV files. For other file types, these will be ignored.
+df = spark.read.format(file_type) \
+  .option("inferSchema", infer_schema) \
+  .option("header", first_row_is_header) \
+  .option("sep", delimiter) \
+  .load(file_location)
+ 
+##display(df)
+
+@udf(StringType())
+def ascii_ignore(x): 
+  if x is None:
+    return x 
+  else:
+    return x.encode('ascii', 'ignore').decode('ascii') 
+  
+  
+@udf(StringType())
+def validate_url(url):
+  headers = {'User-Agent': 'Mozilla/5.0'}
+  response = requests.get(f'{url}', headers=headers)
+  return response.status_code
+ 
+@udf(StringType())
+def validate_url2(url):
+  status = validators.url(url)
+  if status:
+    return "Valid"
+  else:
+    return "InValid"
+    
+    
+    df2 = df.withColumn("Name_", ascii_ignore(col('name')))\
+         .withColumn("Location_", ascii_ignore(col('location')))\
+         .withColumn("Rest_Type_", ascii_ignore(col('rest_type')))\
+         .withColumn("City_", ascii_ignore(col('listed_in(city)')))\
+         .withColumn("Votes_", col('votes').cast("integer"))\
+         .withColumn("Rate_", regexp_replace(col("rate"), "/5", "")).drop(*["name", "location", "rest_type", "listed_in(city)", "rate"])
+         
+         
+         Remove restaurants with no ratings
+df3 = df2.filter(col("Rate_")>0)
+new = df3.count()
+old = df2.count()
+zero = old-new
+print(f"Restaurants with zero rating - {zero}")
+
+
+df4 = df3.withColumn("Url_Validator", validate_url2(col("url")))
+df5 = df4.filter(col("Url_Validator")=='InValid') ##picking URLs that are invalid . 
+display(df5.groupBy(col("Location_")).count())
+
+Working Restaurants count by Highest Ratings
+df6 = df4.filter(col("Url_Validator")=='Valid')
+display(df6.groupBy(['Location_', 'Rate_']).count().orderBy(col('Rate_').desc()))
+
+df_rate = df7.select("Rate_").toPandas()
+sns.distplot(df_rate['Rate_'])
+
+from pyspark.ml.feature import Bucketizer ##categorize 
+bucketizer = Bucketizer(splits=[ 0, 300, 500, 800, float('Inf') ],inputCol="Votes_", outputCol="buckets")
+df_buck = bucketizer.setHandleInvalid("keep").transform(df4) 
